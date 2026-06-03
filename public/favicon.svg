@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#f5f0e8"/>
+  <g fill="none" stroke="#3a2d1e" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <!-- hanger hook -->
+    <path d="M256 132c0-22 18-40 40-40s40 18 40 40c0 18-14 28-34 36"/>
+    <!-- hanger triangle bar -->
+    <path d="M256 168 L120 304 L392 304 Z"/>
+  </g>
+  <!-- accent thread -->
+  <circle cx="256" cy="380" r="14" fill="#c4785a"/>
+</svg>
