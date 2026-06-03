@@ -10,11 +10,11 @@ const svgPath = join(publicDir, "favicon.svg");
 const svg = await readFile(svgPath);
 
 const sizes = [
-  { file: "icon-192.png", size: 192, pad: 0, bg: "#f5f0e8" },
-  { file: "icon-512.png", size: 512, pad: 0, bg: "#f5f0e8" },
-  { file: "apple-touch-icon.png", size: 180, pad: 0, bg: "#f5f0e8" },
+  { file: "icon-192.png", size: 192, pad: 0, bg: "#0d1a3a" },
+  { file: "icon-512.png", size: 512, pad: 0, bg: "#0d1a3a" },
+  { file: "apple-touch-icon.png", size: 180, pad: 0, bg: "#0d1a3a" },
   // Maskable: inner safe area is ~80% of canvas, so pad the artwork in.
-  { file: "icon-512-maskable.png", size: 512, pad: 64, bg: "#f5f0e8" },
+  { file: "icon-512-maskable.png", size: 512, pad: 64, bg: "#0d1a3a" },
 ];
 
 for (const { file, size, pad, bg } of sizes) {
