@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 // ─── WARDROBE ───────────────────────────────────────────────────────────────
 
@@ -448,14 +448,7 @@ const avoid = [
   { combo: "Burnt orange trucker + warm statement tops (rust, desert red swirl, faded red)", reason: "The jacket is the statement — pair only with neutral tops like white tee, beige, or oatmeal underneath." },
   { combo: "Seafoam polo + sage pants or blue-green sweater", reason: "Too close in cool-green tone — they merge instead of complementing each other." },
   { combo: "Leaf green sweater + other green pieces (forest tee, spring green, olive botanical)", reason: "One green at a time. The leaf green is enough — don't double up." },
-  // Dark brown loafer — style clashes only (shoe-vs-shoe handled automatically)
-  { ids: ["darkBrownLoafer", "whiteShorts"],     reason: "Dark brown loafers are a dress shoe — they don't belong with shorts. Wear with pants or linen only." },
-  { ids: ["darkBrownLoafer", "navyWaffleShorts"],reason: "Dark brown loafers don't belong with shorts. Reserve for pants and linen." },
-  { ids: ["darkBrownLoafer", "blackShorts"],     reason: "Dark brown loafers don't belong with shorts. Reserve for pants and linen." },
-  { ids: ["darkBrownLoafer", "lightBlueShorts"], reason: "Dark brown loafers don't belong with shorts. Reserve for pants and linen." },
-  { ids: ["darkBrownLoafer", "sandCordShorts"],  reason: "Dark brown loafers don't belong with shorts. Reserve for pants and linen." },
-  { ids: ["darkBrownLoafer", "mustardShorts"],   reason: "Dark brown loafers don't belong with shorts. Reserve for pants and linen." },
-  { ids: ["darkBrownLoafer", "darkGreenShorts"], reason: "Dark brown loafers don't belong with shorts. Reserve for pants and linen." },
+  { combo: "Dark brown loafers + any shorts", reason: "Loafers are a dress shoe — pair them with pants or linen only, never shorts." },
 ];
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -464,6 +457,104 @@ const allItems = {};
 Object.values(wardrobe).forEach(cat => cat.forEach(item => { allItems[item.id] = item; }));
 
 const CATEGORY_LABELS = { tops: "Tops", shorts: "Shorts", bottoms: "Pants", jackets: "Jackets", shoes: "Shoes" };
+
+// La Mesa, CA coordinates for daily weather lookup
+const LA_MESA = { lat: 32.7678, lon: -117.0231, tz: "America/Los_Angeles" };
+const DEFAULT_TEMP_F = 72; // sensible fallback when offline / API fails
+
+// Today's date in La Mesa's timezone, formatted YYYY-MM-DD.
+// Stable across the day so refreshes give the same suggestions.
+function todayInLaMesa() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: LA_MESA.tz });
+}
+
+// Mulberry32 PRNG — tiny, deterministic, good enough for shuffling.
+function mulberry32(seed) {
+  return function () {
+    let t = (seed += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Hash a string into a 32-bit seed.
+function hashSeed(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// Fisher-Yates shuffle using a seeded PRNG. Pure — input array not mutated.
+function seededShuffle(arr, seed) {
+  const a = arr.slice();
+  const rand = mulberry32(seed);
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Pick today's 3 suggested outfits given a temperature.
+// Hot day (>=70°F): 2 shorts outfits + 1 pants outfit. Otherwise: 1 + 2.
+// Deterministic per-date, so the same day always shows the same picks
+// but consecutive days reliably differ.
+function pickSuggestedOutfits(tempF, dateStr) {
+  const shortsIds = new Set(wardrobe.shorts.map((s) => s.id));
+  const shortsOutfits = outfits.filter((o) => shortsIds.has(o.bottom));
+  const pantsOutfits = outfits.filter((o) => !shortsIds.has(o.bottom));
+  const seed = hashSeed(dateStr);
+  const shuffledShorts = seededShuffle(shortsOutfits, seed);
+  const shuffledPants = seededShuffle(pantsOutfits, seed ^ 0xa5a5a5a5);
+  const isHot = tempF >= 70;
+  return isHot
+    ? [...shuffledShorts.slice(0, 2), ...shuffledPants.slice(0, 1)]
+    : [...shuffledShorts.slice(0, 1), ...shuffledPants.slice(0, 2)];
+}
+
+// Fetch today's average temperature for La Mesa from Open-Meteo (no API key).
+// Caches by date in localStorage so we only hit the network once per day
+// and so installed PWAs work offline after the first successful load.
+function useTodayTemperatureF() {
+  const date = todayInLaMesa();
+  const cacheKey = `weather-${date}`;
+  const cached =
+    typeof window !== "undefined" ? window.localStorage.getItem(cacheKey) : null;
+  const [tempF, setTempF] = useState(cached != null ? Number(cached) : null);
+
+  useEffect(() => {
+    if (cached != null) return;
+    const url =
+      `https://api.open-meteo.com/v1/forecast?latitude=${LA_MESA.lat}` +
+      `&longitude=${LA_MESA.lon}&daily=temperature_2m_max,temperature_2m_min` +
+      `&temperature_unit=fahrenheit&timezone=${encodeURIComponent(LA_MESA.tz)}` +
+      `&forecast_days=1`;
+    let cancelled = false;
+    fetch(url)
+      .then((r) => r.json())
+      .then((data) => {
+        const hi = data?.daily?.temperature_2m_max?.[0];
+        const lo = data?.daily?.temperature_2m_min?.[0];
+        if (typeof hi !== "number" || typeof lo !== "number") return;
+        const avg = (hi + lo) / 2;
+        if (cancelled) return;
+        window.localStorage.setItem(cacheKey, String(avg));
+        setTempF(avg);
+      })
+      .catch(() => {
+        /* offline / network error — fall back to default in the renderer */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cacheKey, cached]);
+
+  return { tempF, date };
+}
 
 function getClashes(selectedSet) {
   if (selectedSet.size < 2) return [];
@@ -531,6 +622,20 @@ export default function StyleGuide() {
   const [selected, setSelected] = useState(new Set());
   const [showLayered, setShowLayered] = useState(null);
 
+  const { tempF, date } = useTodayTemperatureF();
+  const effectiveTemp = tempF ?? DEFAULT_TEMP_F;
+  const suggestedOutfits = useMemo(
+    () => pickSuggestedOutfits(effectiveTemp, date),
+    [effectiveTemp, date]
+  );
+  const tempLabel =
+    tempF == null ? `~${DEFAULT_TEMP_F}°F` : `${Math.round(tempF)}°F`;
+  const weekdayLabel = new Date(date + "T12:00:00").toLocaleDateString("en-US", {
+    weekday: "long",
+    timeZone: LA_MESA.tz,
+  });
+  const emptySelection = useMemo(() => new Set(), []);
+
   const toggle = (id) => {
     setSelected(prev => {
       const next = new Set(prev);
@@ -573,6 +678,28 @@ export default function StyleGuide() {
       </div>
 
       <div style={{ padding: "32px 20px", maxWidth: "780px", margin: "0 auto" }}>
+
+        {/* Suggested Outfits — daily, weather-driven, independent of selection */}
+        <section style={{ marginBottom: "32px", background: "#fff", borderRadius: "16px", padding: "24px", border: "1px solid #e8e4de" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "16px", gap: "10px", flexWrap: "wrap" }}>
+            <div style={{ fontFamily: "'DM Mono', monospace", fontSize: "10px", letterSpacing: "0.15em", color: "#999", textTransform: "uppercase" }}>
+              Suggested Outfits
+            </div>
+            <div style={{ fontFamily: "'DM Mono', monospace", fontSize: "10px", color: "#888", letterSpacing: "0.08em" }}>
+              {weekdayLabel} · La Mesa · avg {tempLabel}
+            </div>
+          </div>
+          <div style={{ fontFamily: "'Lora', serif", fontSize: "12px", color: "#888", fontStyle: "italic", marginBottom: "16px", lineHeight: 1.6 }}>
+            {effectiveTemp >= 70
+              ? "Warm one — leaning shorts today."
+              : "Cooler one — leaning pants today."}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: "14px" }}>
+            {suggestedOutfits.map((outfit, i) => (
+              <OutfitCard key={`suggested-${date}-${i}`} outfit={outfit} selected={emptySelection} />
+            ))}
+          </div>
+        </section>
 
         {/* Wardrobe */}
         <section style={{ marginBottom: "32px" }}>
@@ -655,31 +782,6 @@ export default function StyleGuide() {
           </section>
         )}
 
-        {/* Color Rules */}
-        <section style={{ marginBottom: "32px", background: "#fff", borderRadius: "16px", padding: "24px", border: "1px solid #e8e4de" }}>
-          <div style={{ fontFamily: "'DM Mono', monospace", fontSize: "10px", letterSpacing: "0.15em", color: "#999", textTransform: "uppercase", marginBottom: "16px" }}>Core Color Rules</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {[
-              { rule: "White sneakers go with everything cool-toned or light.", detail: "Sage, jeans, shorts, black tops, linen — white keeps it clean and fresh." },
-              { rule: "Brown sneakers live in the warm world.", detail: "Olive, brown corduroy, rust, oatmeal, beige linen, mustard — the golden caramel tone makes them a natural echo for any warm-earth palette. They can also bridge sage pants when a strong warm top anchors the outfit." },
-              { rule: "Birkenstocks are your warm-weather warm-palette shoe.", detail: "Beige linen, rust, olive, corduroy — Birks belong in the earth family. Avoid with cool-toned bottoms." },
-              { rule: "Gray sneakers are your bridge shoe.", detail: "Too cool for brown, too textured for white — they fill the gap and add an editorial edge." },
-              { rule: "Sage green sneakers belong in the cool-to-neutral world.", detail: "Best with jeans, sage pants, white or navy shorts, and nature-toned tops. The lighter mint tone means they can serve as a cool accent on warmer bottoms like mustard — but keep away from warm statement shirts." },
-              { rule: "Statement tops need plain everything else.", detail: "Rust, mosaic, desert red swirl, spring green — let the top lead. Simple bottoms, simple shoes." },
-              { rule: "Statement jackets need a quiet base.", detail: "The forest rain jacket, silver jacket, and 90s jacket each need a black, white, or beige top beneath them." },
-              { rule: "Tonal dressing is always safe.", detail: "Wearing shades in the same family (all earth, all cool, all muted) looks intentional and considered." },
-            ].map((item, i) => (
-              <div key={i} style={{ display: "flex", gap: "14px", alignItems: "flex-start" }}>
-                <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#1a1a1a", color: "#f5f2ed", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontFamily: "'DM Mono', monospace", flexShrink: 0, marginTop: "1px" }}>{i + 1}</div>
-                <div>
-                  <div style={{ fontFamily: "'Playfair Display', serif", fontSize: "14px", color: "#1a1a1a", fontWeight: 700 }}>{item.rule}</div>
-                  <div style={{ fontFamily: "'Lora', serif", fontSize: "12px", color: "#888", marginTop: "2px", fontStyle: "italic" }}>{item.detail}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
         {/* Outfit Grid */}
         <section style={{ marginBottom: "40px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
@@ -710,6 +812,31 @@ export default function StyleGuide() {
               No outfits match the current selection.
             </div>
           )}
+        </section>
+
+        {/* Color Rules */}
+        <section style={{ marginBottom: "32px", background: "#fff", borderRadius: "16px", padding: "24px", border: "1px solid #e8e4de" }}>
+          <div style={{ fontFamily: "'DM Mono', monospace", fontSize: "10px", letterSpacing: "0.15em", color: "#999", textTransform: "uppercase", marginBottom: "16px" }}>Core Color Rules</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {[
+              { rule: "White sneakers go with everything cool-toned or light.", detail: "Sage, jeans, shorts, black tops, linen — white keeps it clean and fresh." },
+              { rule: "Brown sneakers live in the warm world.", detail: "Olive, brown corduroy, rust, oatmeal, beige linen, mustard — the golden caramel tone makes them a natural echo for any warm-earth palette. They can also bridge sage pants when a strong warm top anchors the outfit." },
+              { rule: "Birkenstocks are your warm-weather warm-palette shoe.", detail: "Beige linen, rust, olive, corduroy — Birks belong in the earth family. Avoid with cool-toned bottoms." },
+              { rule: "Gray sneakers are your bridge shoe.", detail: "Too cool for brown, too textured for white — they fill the gap and add an editorial edge." },
+              { rule: "Sage green sneakers belong in the cool-to-neutral world.", detail: "Best with jeans, sage pants, white or navy shorts, and nature-toned tops. The lighter mint tone means they can serve as a cool accent on warmer bottoms like mustard — but keep away from warm statement shirts." },
+              { rule: "Statement tops need plain everything else.", detail: "Rust, mosaic, desert red swirl, spring green — let the top lead. Simple bottoms, simple shoes." },
+              { rule: "Statement jackets need a quiet base.", detail: "The forest rain jacket, silver jacket, and 90s jacket each need a black, white, or beige top beneath them." },
+              { rule: "Tonal dressing is always safe.", detail: "Wearing shades in the same family (all earth, all cool, all muted) looks intentional and considered." },
+            ].map((item, i) => (
+              <div key={i} style={{ display: "flex", gap: "14px", alignItems: "flex-start" }}>
+                <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#1a1a1a", color: "#f5f2ed", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontFamily: "'DM Mono', monospace", flexShrink: 0, marginTop: "1px" }}>{i + 1}</div>
+                <div>
+                  <div style={{ fontFamily: "'Playfair Display', serif", fontSize: "14px", color: "#1a1a1a", fontWeight: 700 }}>{item.rule}</div>
+                  <div style={{ fontFamily: "'Lora', serif", fontSize: "12px", color: "#888", marginTop: "2px", fontStyle: "italic" }}>{item.detail}</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </section>
 
         {/* Avoid */}
