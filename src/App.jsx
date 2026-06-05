@@ -516,12 +516,15 @@ function pickSuggestedOutfits(tempF, dateStr) {
     : [...shuffledShorts.slice(0, 1), ...shuffledPants.slice(0, 2)];
 }
 
-// Fetch today's average temperature for La Mesa from Open-Meteo (no API key).
+// Fetch today's HIGH temperature for La Mesa from Open-Meteo (no API key).
+// We use the high (not the average) because outfit choice is driven by the
+// hottest part of the day — that's when you're actually outside.
 // Caches by date in localStorage so we only hit the network once per day
 // and so installed PWAs work offline after the first successful load.
 function useTodayTemperatureF() {
   const date = todayInLaMesa();
-  const cacheKey = `weather-${date}`;
+  // "v2" suffix busts any older cache entries that stored daily averages.
+  const cacheKey = `weather-high-v2-${date}`;
   const cached =
     typeof window !== "undefined" ? window.localStorage.getItem(cacheKey) : null;
   const [tempF, setTempF] = useState(cached != null ? Number(cached) : null);
@@ -530,7 +533,7 @@ function useTodayTemperatureF() {
     if (cached != null) return;
     const url =
       `https://api.open-meteo.com/v1/forecast?latitude=${LA_MESA.lat}` +
-      `&longitude=${LA_MESA.lon}&daily=temperature_2m_max,temperature_2m_min` +
+      `&longitude=${LA_MESA.lon}&daily=temperature_2m_max` +
       `&temperature_unit=fahrenheit&timezone=${encodeURIComponent(LA_MESA.tz)}` +
       `&forecast_days=1`;
     let cancelled = false;
@@ -538,12 +541,10 @@ function useTodayTemperatureF() {
       .then((r) => r.json())
       .then((data) => {
         const hi = data?.daily?.temperature_2m_max?.[0];
-        const lo = data?.daily?.temperature_2m_min?.[0];
-        if (typeof hi !== "number" || typeof lo !== "number") return;
-        const avg = (hi + lo) / 2;
+        if (typeof hi !== "number") return;
         if (cancelled) return;
-        window.localStorage.setItem(cacheKey, String(avg));
-        setTempF(avg);
+        window.localStorage.setItem(cacheKey, String(hi));
+        setTempF(hi);
       })
       .catch(() => {
         /* offline / network error — fall back to default in the renderer */
@@ -686,7 +687,7 @@ export default function StyleGuide() {
               Suggested Outfits
             </div>
             <div style={{ fontFamily: "'DM Mono', monospace", fontSize: "10px", color: "#888", letterSpacing: "0.08em" }}>
-              {weekdayLabel} · La Mesa · avg {tempLabel}
+              {weekdayLabel} · La Mesa · high {tempLabel}
             </div>
           </div>
           <div style={{ fontFamily: "'Lora', serif", fontSize: "12px", color: "#888", fontStyle: "italic", marginBottom: "16px", lineHeight: 1.6 }}>
